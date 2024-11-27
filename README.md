@@ -1,4 +1,4 @@
-# Project Title
+# Text2SQL
 
 ## Description
 📔 Text ➡️ SQL 🧑‍💻
