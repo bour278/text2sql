@@ -18,3 +18,9 @@
 - [PET-SQL: A Prompt-enhanced Two-stage Text-to-SQL Framework with Cross-consistency](https://arxiv.org/html/2403.09732v1)
 - [SeaD: End-to-end Text-to-SQL Generation with Schema-aware Denoising](https://arxiv.org/pdf/2105.07911)
 - [Next-Generation Database Interfaces:A Survey of LLM-based Text-to-SQL](https://arxiv.org/pdf/2406.08426)
+
+## Implementaions
+
+Test 1️⃣ -  Langgraph 🦜
+
+![Workflow 1](/src/agents/graph.png)
