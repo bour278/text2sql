@@ -23,4 +23,6 @@
 
 Test 1️⃣ -  Langgraph 🦜
 
-![Workflow 1](/src/agents/graph.png)
+<p align="center">
+  <img src="/src/agents/graph.png" alt="Workflow 1"/>
+</p>
