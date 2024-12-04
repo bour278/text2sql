@@ -21,8 +21,19 @@
 
 ## Implementaions
 
-Test 1️⃣ -  Langgraph 🦜
+Langgraph Workflow 🦜
 
+- Master Workflow
 <p align="center">
-  <img src="/src/agents/graph.png" alt="Workflow 1"/>
+  <img src="/src/workflow_visualizations/master_workflow.png" alt="Master Workflow"/>
+</p>
+
+- Python Workflow
+<p align="center">
+  <img src="/src/workflow_visualizations/python_workflow.png" alt="Python Workflow"/>
+</p>
+
+- SQL Workflow
+<p align="center">
+  <img src="/src/workflow_visualizations/sql_workflow.png" alt="SQL Workflow"/>
 </p>
