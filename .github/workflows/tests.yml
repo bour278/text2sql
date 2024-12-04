@@ -10,6 +10,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     environment: test
+
     steps:
     - uses: actions/checkout@v2
     
@@ -26,6 +27,7 @@ jobs:
     
     - name: Run tests
       env:
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_API_KEY: ${{ vars.OPENAI_API_KEY }}
       run: |
+        echo "API Key exists: ${{ vars.OPENAI_API_KEY != '' }}"
         pytest tests/test_integration.py -v
