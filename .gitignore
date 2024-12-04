@@ -50,3 +50,5 @@ pytest_cache/
 # Other
 *.bak
 *.tmp
+
+src/agents/keys.env
