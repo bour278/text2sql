@@ -1,128 +1,143 @@
 from langgraph.graph import StateGraph, START, END 
-from langgraph.graph.message import add_messages
 from typing_extensions import Annotated, TypedDict
-from sender import ChatGPTSender
-import yaml
-import os
 from langchain_openai import ChatOpenAI
-import sqlite3
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
-from IPython.display import Image, display
+from langchain_core.messages import SystemMessage, HumanMessage
 from dotenv import load_dotenv
+from .sql_workflow import SQLWorkflow
+from .python_workflow import PythonWorkflow
+import os
+from pathlib import Path
+import json
+from typing import Any, Dict
 
-load_dotenv('keys.env')
-
-class Agent:
-    pass 
+current_dir = Path(__file__).parent
+env_path = current_dir / "keys.env"
+print("Looking for .env file at:", env_path)
+load_dotenv(env_path)
+api_key = os.getenv("OPENAI_API_KEY")
+print("API Key loaded:", bool(api_key))
 
 class State(TypedDict):
-    messages : Annotated[list, add_messages] 
+    messages: Annotated[list, "Message history"]
+    complexity_score: float
+    workflow_type: str
+    results: Any
 
-graph    = StateGraph(State)
-chat_gpt = ChatOpenAI(
-    model='gpt-4-1106-preview',
-    temperature=0.7,
-    openai_api_key=os.getenv("OPENAI_API_KEY")
-    )
-query_gpt = lambda msg : chat_gpt.invoke(msg)
+class MasterWorkflow:
+    def __init__(self, db_path: str = "../synthetic_data.db"):
+        self.db_path = db_path
+        self.setup_components()
+        self.setup_graph()
 
+    def setup_components(self):
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY not found in environment variables")
+            
+        self.chat_gpt = ChatOpenAI(
+            model='gpt-4-1106-preview',
+            temperature=0.7,
+            api_key=api_key  # Explicitly pass the API key
+        )
+        self.sql_workflow = SQLWorkflow(self.db_path)
+        self.python_workflow = PythonWorkflow(self.db_path)
 
-def get_schema(db_path: str) -> str:
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    def setup_graph(self):
+        self.graph = StateGraph(State)
+        
+        self.graph.add_node("evaluate_complexity", self.evaluate_complexity)
+        self.graph.add_node("route_workflow", self.route_workflow)
+        
+        self.graph.add_edge(START, "evaluate_complexity")
+        self.graph.add_edge("evaluate_complexity", "route_workflow")
+        self.graph.add_edge("route_workflow", END)
+        
+        self.compiled_graph = self.graph.compile()
 
-    cursor.execute("SELECT name from sqlite_master WHERE type='table';")
-    tables = cursor.fetchall()
+    def evaluate_complexity(self, state: State) -> Dict:
+        """Evaluate query complexity using LLM."""
+        query = state['messages'][-1].content
+        
+        messages = [
+            SystemMessage(content="""You are a SQL complexity evaluator. 
+            Analyze the given query and return a JSON object in this exact format:
+            {
+                "complexity_score": <float between 0 and 1>,
+                "reasoning": "<brief explanation>",
+                "recommended_workflow": "<either 'sql' or 'python'>"
+            }
+            
+            Use these criteria:
+            - SQL if it's a simple query needing only basic SQL operations (score < 0.5)
+            - Python if it requires complex calculations, multiple steps, or data analysis (score >= 0.5)
+            
+            Return ONLY the JSON object, no other text."""),
+            HumanMessage(content=query)
+        ]
+        
+        try:
+            response = self.chat_gpt.invoke(messages)
+            print("Raw LLM Response:", response.content)  # Debug print
+            
+            content = response.content.strip()
+            if content.startswith('```json'):
+                content = content[7:-3]
+            
+            evaluation = json.loads(content)
+            
+            required_fields = ["complexity_score", "reasoning", "recommended_workflow"]
+            if not all(field in evaluation for field in required_fields):
+                raise ValueError("Missing required fields in evaluation")
+            
+            return {
+                "complexity_score": float(evaluation["complexity_score"]),
+                "workflow_type": evaluation["recommended_workflow"],
+                "messages": [("assistant", f"Complexity evaluation: {evaluation['reasoning']}")],
+            }
+            
+        except json.JSONDecodeError as e:
+            print(f"JSON Decode Error: {e}")
+            return {
+                "complexity_score": 0.1,
+                "workflow_type": "sql",
+                "messages": [("assistant", "Failed to parse complexity, defaulting to SQL workflow")],
+            }
+        except Exception as e:
+            print(f"Evaluation Error: {e}")
+            return {
+                "complexity_score": 0.1,
+                "workflow_type": "sql",
+                "messages": [("assistant", f"Error in evaluation: {str(e)}")],
+            }
 
-    main_schema = []
-    for table in tables:
-        table_name = table[0]
-        cursor.execute(f'PRAGMA table_info({table_name});')
-        columns = cursor.fetchall()
-        info = [f"    - {col[1]} ({col[2]})" for col in columns]
-        schema = f"Table: {table_name}\n" + "\n".join(info)
-        main_schema.append(schema)
-    
-    conn.close()
-    return "\n\n".join(main_schema)
+    def route_workflow(self, state: State) -> Dict:
+        """Route to appropriate workflow based on complexity."""
+        first_message = state['messages'][0]
+        original_question = first_message.content if hasattr(first_message, 'content') else first_message[1]
+        
+        if state["workflow_type"] == "sql":
+            result = self.sql_workflow.process_question(original_question)
+        else:
+            result = self.python_workflow.process_question(original_question)
+        
+        return {
+            "messages": result["messages"],
+            "results": result["results"]
+        }
 
-def parse_question(self, state: dict) -> dict:
-    """Parse user question and identify relevant tables and columns."""
-    question = state['question']
-    schema = self.db_manager.get_schema(state['uuid'])
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", '''You are a data analyst that can help summarize SQL tables and parse user questions about a database. 
-            Given the question and database schema, identify the relevant tables and columns. 
-            If the question is not relevant to the database or if there is not enough information to answer the question, set is_relevant to false.
-
-            Your response should be in the following JSON format:
-            {{
-            "is_relevant": boolean,
-            "relevant_tables": [
-                {{
-                    "table_name": string,
-                    "columns": [string],
-                    "noun_columns": [string]
-                }}
-            ]
-            }}
-
-            The "noun_columns" field should contain only the columns that are relevant to the question and contain nouns or names, for example, the column "Artist name" contains nouns relevant to the question "What are the top selling artists?", but the column "Artist ID" is not relevant because it does not contain a noun. Do not include columns that contain numbers.
-            '''),
-            ("human", "===Database schema:\n{schema}\n\n===User question:\n{question}\n\nIdentify relevant tables and columns:")
-    ])
-
-    output_parser = JsonOutputParser()
-    
-    response = self.llm_manager.invoke(prompt, schema=schema, question=question)
-    parsed_response = output_parser.parse(response)
-    return {"parsed_question": parsed_response}
-
-
-
-
-def parse_question(state: State):
-    query  = state['messages'][-1]
-    prompt = f'Is this relevant: {query}'
-    return {"messages" : [chat_gpt.send_request(prompt)]}
-
-graph.add_node('question_parser', parse_question)
-graph.add_edge(START, 'question_parser')
-
-def break_into_components(state: State):
-    query  = state['messages'][-1]
-    prompt = f'Break into components: {query}'
-    return {"messages" : [chat_gpt.send_request(prompt)]}
-
-graph.add_node('break_into_components', break_into_components)
-graph.add_edge("question_parser", "break_into_components")
-
-
-def write_sql_code(state: State):
-    query  = state['messages'][-1]
-    prompt = f'Write sql code for this task: {query}'
-    return {"messages" : [chat_gpt.send_request(prompt)]}
-
-graph.add_node('write_sql_code', write_sql_code)
-graph.add_edge("break_into_components", "write_sql_code")
-
-def validate_sql(state: State):
-    query  = state['messages'][-1]
-    prompt = f'Check if this sql query makes sense: {query}'
-    return {"messages" : [chat_gpt.send_request(prompt)]}
-
-graph.add_node('validate_sql', validate_sql)
-graph.add_edge('write_sql_code', 'validate_sql')
-graph.add_edge('validate_sql', END)
-compiled_graph = graph.compile()
-
-try:
-    graph_image = compiled_graph.get_graph().draw_mermaid_png()
-    with open("graph.png", "wb") as f:
-        f.write(graph_image)
-    display(Image(graph_image))
-except Exception as e:
-    print(f"Could not display graph: {str(e)}")
-    print("Make sure you have graphviz installed on your system")
+    def process_question(self, question: str) -> Dict:
+        initial_state = {
+            "messages": [HumanMessage(content=question)],
+            "complexity_score": 0.0,
+            "workflow_type": "",
+            "results": None
+        }
+        result = self.compiled_graph.invoke(initial_state)
+        
+        return {
+            "workflow_type": result["workflow_type"],
+            "complexity_score": result["complexity_score"],
+            "results": result.get("results"),
+            "error": result.get("error"),
+            "messages": result.get("messages", [])
+        }

@@ -1,8 +1,14 @@
 import sqlite3
 import pandas as pd
 import numpy as np
+from pathlib import Path
 
-conn = sqlite3.connect('synthetic_data.db')
+# Create database in /src directory
+src_dir = Path(__file__).parent.parent / 'src'
+db_path = src_dir / 'synthetic_data.db'
+
+print(f"Creating database at: {db_path}")
+conn = sqlite3.connect(db_path)
 
 cursor = conn.cursor()
 
@@ -68,3 +74,5 @@ treasury_yields_df.to_sql('treasury_yields', conn, if_exists='append', index=Fal
 
 conn.commit()
 conn.close()
+
+print(f"Database created successfully at: {db_path}")

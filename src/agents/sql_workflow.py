@@ -9,10 +9,16 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from colorama import Fore, Style
 from typing import Dict, Any
+from pathlib import Path
 from pydantic import BaseModel, field_validator
 import os
 
-load_dotenv('keys.env')
+current_dir = Path(__file__).parent
+env_path = current_dir / "keys.env"
+print("Looking for .env file at:", env_path)
+load_dotenv(env_path)
+api_key = os.getenv("OPENAI_API_KEY")
+print("API Key loaded:", bool(api_key))
 
 class SQLExtractor(BaseModel):
     response: str
@@ -40,10 +46,21 @@ class State(TypedDict):
     results: Any
     
 class SQLWorkflow:
-    def __init__(self, db_path: str = "../../synthetic_data.db"):
+    def __init__(self, db_path: str = "../synthetic_data.db"):
         self.db_path = db_path
+        print(f"\n{Fore.BLUE}Attempting to connect to database at:{Style.RESET_ALL} {os.path.abspath(self.db_path)}")
+        
+        if not os.path.exists(self.db_path):
+            raise FileNotFoundError(f"Database file not found at: {self.db_path}")
+        
         self.db_uri = f"sqlite:///{db_path}"
         self.engine = create_engine(self.db_uri)
+        
+        schema = self.get_schema()
+        print(f"\n{Fore.GREEN}Successfully connected to database. Schema:{Style.RESET_ALL}")
+        print(schema)
+        print()
+        
         self.setup_graph()
         
     def setup_graph(self):
@@ -54,13 +71,11 @@ class SQLWorkflow:
             openai_api_key=os.getenv("OPENAI_API_KEY")
         )
         
-        # Add nodes and edges
         self.graph.add_node("parse_question", self.parse_question)
         self.graph.add_node("generate_sql", self.generate_sql)
         self.graph.add_node("validate_sql", self.validate_sql)
         self.graph.add_node("execute_sql", self.execute_sql)
         
-        # Connect nodes
         self.graph.add_edge(START, "parse_question")
         self.graph.add_edge("parse_question", "generate_sql")
         self.graph.add_edge("generate_sql", "validate_sql")
@@ -97,6 +112,10 @@ class SQLWorkflow:
         query = state['messages'][-1].content if hasattr(state['messages'][-1], 'content') else state['messages'][-1][1]
         schema = self.get_schema()
         
+        print(f"\n{Fore.BLUE}Database Schema:{Style.RESET_ALL}")
+        print(schema)
+        print()
+        
         messages = [
             SystemMessage(content=f"""You are a SQL expert. Generate a SQL query to answer the question.
             Here is the database schema:
@@ -107,9 +126,10 @@ class SQLWorkflow:
             HumanMessage(content=query)
         ]
         
+        print(f"{Fore.BLUE}Question being sent to LLM:{Style.RESET_ALL} {query}\n")
+        
         response = self.chat_gpt.invoke(messages)
         
-        # Extract SQL using the SQLExtractor
         extractor = SQLExtractor(response=response.content)
         sql = extractor.response
         
@@ -122,7 +142,7 @@ class SQLWorkflow:
     def validate_sql(self, state: State) -> Dict:
         sql = state['current_sql']
         print(f"{Fore.YELLOW}Validating SQL...{Style.RESET_ALL}")
-        # Add validation logic here if needed
+        
         return {"messages": [("assistant", "SQL validated")], "current_sql": sql}
 
     def execute_sql(self, state: State) -> Dict:
@@ -148,25 +168,3 @@ class SQLWorkflow:
         }
         result = self.compiled_graph.invoke(initial_state)
         return result
-
-def main():
-    workflow = SQLWorkflow()
-    
-    questions = [
-        "What are the closing prices for all dates in the ohlc table?",
-        "What is the minimum price in the ohlc table?",
-        "What is the maximum price in the ohlc table?",
-        "What is the average open price over the last 10 days in the ohlc table ORDER BY date DESC",
-        "What is the stock volatility over the last 21 days from the ohlc table?"
-    ]
-    
-    for question in questions:
-        print(f"\n{Fore.CYAN}{'='*50}{Style.RESET_ALL}")
-        result = workflow.process_question(question)
-        if result.get('results'):
-            print(f"\n{Fore.GREEN}Final Results:{Style.RESET_ALL}")
-            for row in result['results']:
-                print(row)
-
-if __name__ == "__main__":
-    main()
