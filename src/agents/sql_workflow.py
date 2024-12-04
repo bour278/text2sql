@@ -16,8 +16,13 @@ import os
 current_dir = Path(__file__).parent
 env_path = current_dir / "keys.env"
 print("Looking for .env file at:", env_path)
-load_dotenv(env_path)
+
 api_key = os.getenv("OPENAI_API_KEY")
+
+if not api_key and env_path.exists():
+    load_dotenv(env_path)
+    api_key = os.getenv("OPENAI_API_KEY")
+
 print("API Key loaded:", bool(api_key))
 
 class SQLExtractor(BaseModel):
@@ -68,7 +73,7 @@ class SQLWorkflow:
         self.chat_gpt = ChatOpenAI(
             model='gpt-4-1106-preview',
             temperature=0.7,
-            openai_api_key=os.getenv("OPENAI_API_KEY")
+            api_key=api_key
         )
         
         self.graph.add_node("parse_question", self.parse_question)

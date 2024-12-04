@@ -10,6 +10,20 @@ from typing import Dict, Any
 import os
 import re
 from colorama import Fore, Style
+from dotenv import load_dotenv
+from pathlib import Path
+
+current_dir = Path(__file__).parent
+env_path = current_dir / "keys.env"
+print("Looking for .env file at:", env_path)
+
+api_key = os.getenv("OPENAI_API_KEY")
+
+if not api_key and env_path.exists():
+    load_dotenv(env_path)
+    api_key = os.getenv("OPENAI_API_KEY")
+
+print("API Key loaded:", bool(api_key))
 
 class State(TypedDict):
     messages: Annotated[list, "Message history"]
@@ -24,10 +38,9 @@ class PythonWorkflow:
         self.setup_graph()
 
     def setup_components(self):
-        api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment variables")
-            
+        
         self.chat_gpt = ChatOpenAI(
             model='gpt-4-1106-preview',
             temperature=0.7,
