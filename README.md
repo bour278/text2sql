@@ -19,6 +19,28 @@
 - [SeaD: End-to-end Text-to-SQL Generation with Schema-aware Denoising](https://arxiv.org/pdf/2105.07911)
 - [Next-Generation Database Interfaces:A Survey of LLM-based Text-to-SQL](https://arxiv.org/pdf/2406.08426)
 
+## Running
+
+1 - install requirements
+```bash
+pip install requirements.txt
+```
+
+2- navigate to `/data` and run `sqlite-synthetic.py` to create a toy dataset
+```bash
+cd data
+python sqlite-synthetic.py
+```
+_after this step you should see a `synthetic_data.db` in `/src`_
+
+3- navigate to `src` and run `main.py`
+```bash
+cd ../src
+python main.py
+```
+
+_Optional_ run `visualize_workflows.py` to show workflow graphs
+
 ## Implementaions
 
 Langgraph Workflow 🦜
