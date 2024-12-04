@@ -13,8 +13,13 @@ from typing import Any, Dict
 current_dir = Path(__file__).parent
 env_path = current_dir / "keys.env"
 print("Looking for .env file at:", env_path)
-load_dotenv(env_path)
+
 api_key = os.getenv("OPENAI_API_KEY")
+
+if not api_key and env_path.exists():
+    load_dotenv(env_path)
+    api_key = os.getenv("OPENAI_API_KEY")
+
 print("API Key loaded:", bool(api_key))
 
 class State(TypedDict):
