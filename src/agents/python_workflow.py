@@ -117,44 +117,64 @@ class PythonWorkflow:
         query = state['messages'][0].content if hasattr(state['messages'][0], 'content') else state['messages'][0][1]
         data_info = f"DataFrame columns: {list(state['data'].columns)}"
         
-        messages = [
-            SystemMessage(content="""You are a Python data analysis expert specializing in financial calculations.
-            Generate Python code to analyze the data and answer the question.
+        def get_code_from_llm(query_text: str) -> str:
+            messages = [
+                SystemMessage(content="""You are a Python data analysis expert specializing in financial calculations.
+                Generate Python code to analyze the data and answer the question. 
+                
+                IMPORTANT: Your response must be either:
+                1. Python code wrapped in ```python``` blocks
+                2. OR a clarification question starting with 'CLARIFICATION:'
+                
+                Required code structure when providing code:
+                1. Perform your calculations
+                2. Store the final answer in a variable called 'result'
+                3. Format 'result' appropriately:
+                   - For volatility: a single percentage number
+                   - For outliers: a DataFrame with dates and values
+                   - For movements: a DataFrame with dates and changes"""),
+                HumanMessage(content=f"Question: {query_text}\n\nAvailable data: {data_info}")
+            ]
             
-            Required code structure:
-            1. Perform your calculations
-            2. Store the final answer in a variable called 'result'
-            3. Format 'result' appropriately:
-               - For volatility: a single percentage number
-               - For outliers: a DataFrame with dates and values
-               - For movements: a DataFrame with dates and changes
-            
-            Financial calculation notes:
-            - Volatility is annualized std dev of log returns
-            - Use df['close'].pct_change() for returns
-            - Multiply by sqrt(252) to annualize
-            - Convert final percentages by multiplying by 100
-            
-            Example volatility code:
-            ```python
-            returns = df['close'].pct_change()
-            result = returns.std() * np.sqrt(252) * 100  # as percentage
-            ```
-            
-            Example outliers code:
-            ```python
-            returns = df['close'].pct_change()
-            mean = returns.mean()
-            std = returns.std()
-            result = df[abs(returns - mean) > 2 * std][['date', 'close']]
-            ```
-            
-            Return ONLY the Python code wrapped in ```python``` code blocks."""),
-            HumanMessage(content=f"Question: {query}\n\nAvailable data: {data_info}")
-        ]
+            response = self.chat_gpt.invoke(messages)
+            return response.content
+
+        content = get_code_from_llm(query)
         
-        response = self.chat_gpt.invoke(messages)
-        code = self.extract_code(response.content)
+        max_attempts = 3
+        attempt = 0
+        
+        while content.strip().startswith("CLARIFICATION:") and attempt < max_attempts:
+            try:
+                print(f"\n{Fore.YELLOW}Clarification needed:{Style.RESET_ALL}")
+                print(content.replace("CLARIFICATION:", "").strip())
+                user_input = input(f"\n{Fore.GREEN}Your response:{Style.RESET_ALL} ")
+                
+                # Update query with additional context
+                query = f"{query}\nAdditional context: {user_input}"
+                content = get_code_from_llm(query)
+                attempt += 1
+            except Exception as e:
+                print(f"Error during clarification: {e}")
+                break
+
+        if attempt >= max_attempts:
+            return {
+                "messages": [("assistant", "Maximum clarification attempts reached. Please try rephrasing your question.")],
+                "code": "",
+                "results": None
+            }
+
+        code = self.extract_code(content)
+        if not code:
+            return {
+                "messages": [("assistant", "Failed to generate valid Python code")],
+                "code": "",
+                "results": None
+            }
+
+        print(f"{Fore.GREEN}Generated Python:{Style.RESET_ALL}")
+        print(code)
         
         return {
             "messages": [("assistant", code)],
@@ -173,13 +193,26 @@ class PythonWorkflow:
             
             result = namespace.get('result', "No result variable found")
             
+            # Format the result for display
+            if isinstance(result, (float, np.float64)):
+                formatted_result = f"{result:.4f}"
+            elif isinstance(result, pd.DataFrame):
+                formatted_result = "\n" + result.to_string()
+            else:
+                formatted_result = str(result)
+            
+            print(f"\n{Fore.GREEN}Result:{Style.RESET_ALL}")
+            print(formatted_result)
+            
             return {
-                "messages": [("assistant", f"Result: {result}")],
+                "messages": [("assistant", f"Result: {formatted_result}")],
                 "results": result
             }
         except Exception as e:
+            error_msg = f"Error executing code: {str(e)}"
+            print(f"\n{Fore.RED}{error_msg}{Style.RESET_ALL}")
             return {
-                "messages": [("assistant", f"Error executing code: {str(e)}")],
+                "messages": [("assistant", error_msg)],
                 "results": None
             }
 
