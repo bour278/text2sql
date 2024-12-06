@@ -50,22 +50,18 @@ class PythonWorkflow:
         )
         self.engine = create_engine(f"sqlite:///{self.db_path}")
         
-        # Setup RAG components
         self.embeddings = OpenAIEmbeddings(api_key=api_key)
         self.setup_rag()
 
     def setup_rag(self):
-        # Load cookbook content
         pandas_path = Path("src/rag-data/pandas-cookbook.md")
         sqlite_path = Path("src/rag-data/sqlite-cookbook.md")
         
-        # Check if files exist
         if not pandas_path.exists():
             print(f"Warning: {pandas_path} not found")
         if not sqlite_path.exists():
             print(f"Warning: {sqlite_path} not found")
         
-        # Initialize text splitters
         headers_to_split_on = [
             ("#", "Header 1"),
             ("##", "Header 2"),
@@ -75,15 +71,12 @@ class PythonWorkflow:
         markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
         
-        # Process cookbooks
         docs = []
         for path in [pandas_path, sqlite_path]:
             if path.exists():
                 print(f"Processing {path}")
                 content = path.read_text()
-                # Split by headers first
                 header_splits = markdown_splitter.split_text(content)
-                # Further split large chunks
                 for doc in header_splits:
                     chunks = text_splitter.split_text(doc.page_content)
                     docs.extend([{"content": chunk, "source": path.stem} for chunk in chunks])
@@ -93,7 +86,6 @@ class PythonWorkflow:
             self.vectorstore = None
             return
         
-        # Create vector store
         try:
             texts = [doc["content"] for doc in docs]
             metadatas = [{"source": doc["source"]} for doc in docs]
@@ -171,63 +163,37 @@ class PythonWorkflow:
             }
 
         query = state['messages'][0].content if hasattr(state['messages'][0], 'content') else state['messages'][0][1]
-        data_info = f"DataFrame columns: {list(state['data'].columns)}"
-        
-        # Get relevant documentation context
-        context = self.get_relevant_context(query)
+        df = state['data']
+        data_info = f"DataFrame columns: {list(df.columns)}"
         
         def get_code_from_llm(query_text: str) -> str:
             messages = [
                 SystemMessage(content=f"""You are a Python data analysis expert specializing in financial calculations.
                 Generate Python code to analyze the data and answer the question. 
                 
-                Here is some relevant documentation to help you:
-                {context}
+                Available Variables:
+                - 'df': DataFrame with columns {list(df.columns)}
+                - 'pd': pandas module
+                - 'np': numpy module
                 
-                IMPORTANT: Your response must be either:
-                1. Python code wrapped in ```python``` blocks
-                2. OR a clarification question starting with 'CLARIFICATION:'
+                For volatility calculations:
+                - Use log returns: np.log(df['close'] / df['close'].shift(1))
+                - Annualize by multiplying by sqrt(252)
                 
-                Required code structure when providing code:
-                1. Perform your calculations
-                2. Store the final answer in a variable called 'result'
-                3. Format 'result' appropriately:
-                   - For volatility: a single percentage number
-                   - For outliers: a DataFrame with dates and values
-                   - For movements: a DataFrame with dates and changes"""),
-                HumanMessage(content=f"Question: {query_text}\n\nAvailable data: {data_info}")
+                Required:
+                1. Use 'df' for calculations
+                2. Store final answer in 'result'
+                3. For volatility: return as decimal (0.15 for 15%)"""),
+                HumanMessage(content=query_text)
             ]
             
             response = self.chat_gpt.invoke(messages)
             return response.content
 
+        # Initial attempt
         content = get_code_from_llm(query)
-        
-        max_attempts = 3
-        attempt = 0
-        
-        while content.strip().startswith("CLARIFICATION:") and attempt < max_attempts:
-            try:
-                print(f"\n{Fore.YELLOW}Clarification needed:{Style.RESET_ALL}")
-                print(content.replace("CLARIFICATION:", "").strip())
-                user_input = input(f"\n{Fore.GREEN}Your response:{Style.RESET_ALL} ")
-                
-                # Update query with additional context
-                query = f"{query}\nAdditional context: {user_input}"
-                content = get_code_from_llm(query)
-                attempt += 1
-            except Exception as e:
-                print(f"Error during clarification: {e}")
-                break
-
-        if attempt >= max_attempts:
-            return {
-                "messages": [("assistant", "Maximum clarification attempts reached. Please try rephrasing your question.")],
-                "code": "",
-                "results": None
-            }
-
         code = self.extract_code(content)
+        
         if not code:
             return {
                 "messages": [("assistant", "Failed to generate valid Python code")],
@@ -235,9 +201,6 @@ class PythonWorkflow:
                 "results": None
             }
 
-        print(f"{Fore.GREEN}Generated Python:{Style.RESET_ALL}")
-        print(code)
-        
         return {
             "messages": [("assistant", code)],
             "code": code
@@ -248,7 +211,8 @@ class PythonWorkflow:
             namespace = {
                 'pd': pd,
                 'np': np,
-                'df': state['data']
+                'df': state['data'],
+                'engine': self.engine  # Add engine to namespace for SQL queries
             }
             
             exec(state['code'], namespace)
@@ -289,6 +253,7 @@ class PythonWorkflow:
         return matches[0].strip() if matches else text.strip()
 
     def process_question(self, question: str) -> Dict:
+        """Process a question through the workflow."""
         initial_state = {
             "messages": [HumanMessage(content=question)],
             "data": None,
@@ -325,12 +290,10 @@ class PythonWorkflow:
             return str(e)
 
     def get_relevant_context(self, query: str) -> str:
-        # Check if vectorstore exists
         if not self.vectorstore:
             return "Documentation context not available."
         
         try:
-            # Search for relevant documentation
             docs = self.vectorstore.similarity_search(query, k=3)
             context = "\n\n".join(doc.page_content for doc in docs)
             return context
