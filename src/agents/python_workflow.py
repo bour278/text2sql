@@ -1,6 +1,6 @@
 from langgraph.graph import StateGraph, START, END
 from typing_extensions import Annotated, TypedDict
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.messages import SystemMessage, HumanMessage
 import sqlite3
 from sqlalchemy import create_engine
@@ -12,6 +12,8 @@ import re
 from colorama import Fore, Style
 from dotenv import load_dotenv
 from pathlib import Path
+from langchain_community.vectorstores import FAISS
+from langchain.text_splitter import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 current_dir = Path(__file__).parent
 env_path = current_dir / "keys.env"
@@ -47,6 +49,60 @@ class PythonWorkflow:
             api_key=api_key
         )
         self.engine = create_engine(f"sqlite:///{self.db_path}")
+        
+        # Setup RAG components
+        self.embeddings = OpenAIEmbeddings(api_key=api_key)
+        self.setup_rag()
+
+    def setup_rag(self):
+        # Load cookbook content
+        pandas_path = Path("src/rag-data/pandas-cookbook.md")
+        sqlite_path = Path("src/rag-data/sqlite-cookbook.md")
+        
+        # Check if files exist
+        if not pandas_path.exists():
+            print(f"Warning: {pandas_path} not found")
+        if not sqlite_path.exists():
+            print(f"Warning: {sqlite_path} not found")
+        
+        # Initialize text splitters
+        headers_to_split_on = [
+            ("#", "Header 1"),
+            ("##", "Header 2"),
+            ("###", "Header 3"),
+        ]
+        
+        markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+        
+        # Process cookbooks
+        docs = []
+        for path in [pandas_path, sqlite_path]:
+            if path.exists():
+                print(f"Processing {path}")
+                content = path.read_text()
+                # Split by headers first
+                header_splits = markdown_splitter.split_text(content)
+                # Further split large chunks
+                for doc in header_splits:
+                    chunks = text_splitter.split_text(doc.page_content)
+                    docs.extend([{"content": chunk, "source": path.stem} for chunk in chunks])
+        
+        if not docs:
+            print("Warning: No documents were processed. Check if the cookbook files exist and contain content.")
+            self.vectorstore = None
+            return
+        
+        # Create vector store
+        try:
+            texts = [doc["content"] for doc in docs]
+            metadatas = [{"source": doc["source"]} for doc in docs]
+            print(f"Creating vector store with {len(texts)} documents")
+            self.vectorstore = FAISS.from_texts(texts, self.embeddings, metadatas=metadatas)
+            print("Vector store created successfully")
+        except Exception as e:
+            print(f"Error creating vector store: {e}")
+            self.vectorstore = None
 
     def setup_graph(self):
         self.graph = StateGraph(State)
@@ -117,10 +173,16 @@ class PythonWorkflow:
         query = state['messages'][0].content if hasattr(state['messages'][0], 'content') else state['messages'][0][1]
         data_info = f"DataFrame columns: {list(state['data'].columns)}"
         
+        # Get relevant documentation context
+        context = self.get_relevant_context(query)
+        
         def get_code_from_llm(query_text: str) -> str:
             messages = [
-                SystemMessage(content="""You are a Python data analysis expert specializing in financial calculations.
+                SystemMessage(content=f"""You are a Python data analysis expert specializing in financial calculations.
                 Generate Python code to analyze the data and answer the question. 
+                
+                Here is some relevant documentation to help you:
+                {context}
                 
                 IMPORTANT: Your response must be either:
                 1. Python code wrapped in ```python``` blocks
@@ -261,3 +323,17 @@ class PythonWorkflow:
         except Exception as e:
             print(f"{Fore.RED}Error getting schema:{Style.RESET_ALL} {str(e)}")
             return str(e)
+
+    def get_relevant_context(self, query: str) -> str:
+        # Check if vectorstore exists
+        if not self.vectorstore:
+            return "Documentation context not available."
+        
+        try:
+            # Search for relevant documentation
+            docs = self.vectorstore.similarity_search(query, k=3)
+            context = "\n\n".join(doc.page_content for doc in docs)
+            return context
+        except Exception as e:
+            print(f"Error retrieving context: {e}")
+            return "Error retrieving documentation context."
