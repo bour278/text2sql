@@ -1,6 +1,7 @@
 from langgraph.graph import StateGraph, START, END 
 from typing_extensions import Annotated, TypedDict
 from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from dotenv import load_dotenv
 from .sql_workflow import SQLWorkflow
@@ -15,10 +16,13 @@ env_path = current_dir / "keys.env"
 print("Looking for .env file at:", env_path)
 
 api_key = os.getenv("OPENAI_API_KEY")
+google_api_key = os.getenv('GOOGLE_API_KEY')
 
 if not api_key and env_path.exists():
     load_dotenv(env_path)
     api_key = os.getenv("OPENAI_API_KEY")
+    google_api_key = os.getenv('GOOGLE_API_KEY')
+    os.environ["GOOGLE_API_KEY"] = google_api_key
 
 print("API Key loaded:", bool(api_key))
 
@@ -29,8 +33,9 @@ class State(TypedDict):
     results: Any
 
 class MasterWorkflow:
-    def __init__(self, db_path: str = "../synthetic_data.db"):
+    def __init__(self, db_path: str = "../synthetic_data.db", use_gemini: bool = False):
         self.db_path = db_path
+        self.use_gemini = use_gemini
         self.setup_components()
         self.setup_graph()
 
@@ -39,13 +44,33 @@ class MasterWorkflow:
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment variables")
             
-        self.chat_gpt = ChatOpenAI(
-            model='gpt-4-1106-preview',
-            temperature=0.7,
-            api_key=api_key  # Explicitly pass the API key
-        )
-        self.sql_workflow = SQLWorkflow(self.db_path)
-        self.python_workflow = PythonWorkflow(self.db_path)
+        if self.use_gemini:
+            google_api_key = os.getenv('GOOGLE_API_KEY')
+            if not google_api_key:
+                raise ValueError("GOOGLE_API_KEY not found in environment variables")
+            os.environ["GOOGLE_API_KEY"] = google_api_key
+            
+            self.chat_gpt = ChatGoogleGenerativeAI(
+                model="gemini-1.5-pro",
+                temperature=0,
+                max_tokens=None,
+                timeout=None,
+                max_retries=2,
+                google_api_key=google_api_key
+            )
+        else:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("OPENAI_API_KEY not found in environment variables")
+            
+            self.chat_gpt = ChatOpenAI(
+                model='gpt-4-1106-preview',
+                temperature=0.7,
+                api_key=api_key
+            )
+        
+        self.sql_workflow = SQLWorkflow(self.db_path, self.use_gemini)
+        self.python_workflow = PythonWorkflow(self.db_path, self.use_gemini)
 
     def setup_graph(self):
         self.graph = StateGraph(State)
@@ -62,6 +87,7 @@ class MasterWorkflow:
     def evaluate_complexity(self, state: State) -> Dict:
         """Evaluate query complexity using LLM."""
         query = state['messages'][-1].content
+        print(f"INitil query: {query}")
         
         messages = [
             SystemMessage(content="""You are a SQL complexity evaluator. 
@@ -97,7 +123,7 @@ class MasterWorkflow:
             return {
                 "complexity_score": float(evaluation["complexity_score"]),
                 "workflow_type": evaluation["recommended_workflow"],
-                "messages": [("assistant", f"Complexity evaluation: {evaluation['reasoning']}")],
+                "messages": [("assistant", f"content: {query}", f"Complexity evaluation: {evaluation['reasoning']}")],
             }
             
         except json.JSONDecodeError as e:
@@ -117,6 +143,7 @@ class MasterWorkflow:
 
     def route_workflow(self, state: State) -> Dict:
         """Route to appropriate workflow based on complexity."""
+        print(f'weird state!!! {state}')
         first_message = state['messages'][0]
         original_question = first_message.content if hasattr(first_message, 'content') else first_message[1]
         

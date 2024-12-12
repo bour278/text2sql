@@ -2,6 +2,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from typing_extensions import Annotated, TypedDict
 from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 import sqlite3
 import re
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -18,10 +19,14 @@ env_path = current_dir / "keys.env"
 print("Looking for .env file at:", env_path)
 
 api_key = os.getenv("OPENAI_API_KEY")
+google_api_key = os.getenv('GOOGLE_API_KEY')
 
 if not api_key and env_path.exists():
     load_dotenv(env_path)
     api_key = os.getenv("OPENAI_API_KEY")
+    google_api_key = os.getenv('GOOGLE_API_KEY')
+    os.environ["GOOGLE_API_KEY"] = google_api_key
+
 
 print("API Key loaded:", bool(api_key))
 
@@ -51,29 +56,49 @@ class State(TypedDict):
     results: Any
     
 class SQLWorkflow:
-    def __init__(self, db_path: str = "../synthetic_data.db"):
+    def __init__(self, db_path: str = "../synthetic_data.db", use_gemini: bool = False):
         self.db_path = db_path
-        print(f"\n{Fore.BLUE}Attempting to connect to database at:{Style.RESET_ALL} {os.path.abspath(self.db_path)}")
-        
-        if not os.path.exists(self.db_path):
-            raise FileNotFoundError(f"Database file not found at: {self.db_path}")
-        
-        self.db_uri = f"sqlite:///{db_path}"
-        self.engine = create_engine(self.db_uri)
-        
-        schema = self.get_schema()
-        print(f"\n{Fore.GREEN}Successfully connected to database. Schema:{Style.RESET_ALL}")
-        print(schema)
-        print()
-        
+        self.use_gemini = use_gemini
+        self.setup_components()
         self.setup_graph()
+
+    def setup_components(self):
+        if self.use_gemini:
+            google_api_key = os.getenv('GOOGLE_API_KEY')
+            if not google_api_key:
+                raise ValueError("GOOGLE_API_KEY not found in environment variables")
+            os.environ["GOOGLE_API_KEY"] = google_api_key
+            
+            self.chat_gpt = ChatGoogleGenerativeAI(
+                model="gemini-1.5-pro",
+                temperature=0,
+                max_tokens=None,
+                timeout=None,
+                max_retries=2,
+                google_api_key=google_api_key
+            )
+        else:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("OPENAI_API_KEY not found in environment variables")
+            
+            self.chat_gpt = ChatOpenAI(
+                model='gpt-4-1106-preview',
+                temperature=0.7,
+                api_key=api_key
+            )
         
+        # Initialize SQLAlchemy engine
+        self.engine = create_engine(f"sqlite:///{self.db_path}")
+
     def setup_graph(self):
         self.graph = StateGraph(State)
-        self.chat_gpt = ChatOpenAI(
-            model='gpt-4-1106-preview',
-            temperature=0.7,
-            api_key=api_key
+        self.chat_gpt = ChatGoogleGenerativeAI(
+            model="gemini-1.5-pro",
+            temperature=0,
+            max_tokens=None,
+            timeout=None,
+            max_retries=2
         )
         
         self.graph.add_node("parse_question", self.parse_question)
