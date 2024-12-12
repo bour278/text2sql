@@ -1,6 +1,8 @@
 from langgraph.graph import StateGraph, START, END
 from typing_extensions import Annotated, TypedDict
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 import sqlite3
 from sqlalchemy import create_engine
@@ -20,34 +22,56 @@ env_path = current_dir / "keys.env"
 print("Looking for .env file at:", env_path)
 
 api_key = os.getenv("OPENAI_API_KEY")
+google_api_key = os.getenv('GOOGLE_API_KEY')
 
 if not api_key and env_path.exists():
     load_dotenv(env_path)
     api_key = os.getenv("OPENAI_API_KEY")
-
+    google_api_key = os.getenv('GOOGLE_API_KEY')
+    os.environ["GOOGLE_API_KEY"] = google_api_key
+    
 print("API Key loaded:", bool(api_key))
 
 class State(TypedDict):
+    user_question: str  # Original user question
     messages: Annotated[list, "Message history"]
     data: Any
     code: str
     results: Any
 
 class PythonWorkflow:
-    def __init__(self, db_path: str = "../synthetic_data.db"):
+    def __init__(self, db_path: str = "../synthetic_data.db", use_gemini: bool = False):
         self.db_path = db_path
+        self.use_gemini = use_gemini
         self.setup_components()
         self.setup_graph()
 
     def setup_components(self):
+        api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment variables")
         
-        self.chat_gpt = ChatOpenAI(
-            model='gpt-4-1106-preview',
-            temperature=0.7,
-            api_key=api_key
-        )
+        if self.use_gemini:
+            google_api_key = os.getenv('GOOGLE_API_KEY')
+            if not google_api_key:
+                raise ValueError("GOOGLE_API_KEY not found in environment variables")
+            os.environ["GOOGLE_API_KEY"] = google_api_key
+            
+            self.chat_gpt = ChatGoogleGenerativeAI(
+                model="gemini-1.5-pro",
+                temperature=0,
+                max_tokens=None,
+                timeout=None,
+                max_retries=2,
+                google_api_key=google_api_key
+            )
+        else:
+            self.chat_gpt = ChatOpenAI(
+                model='gpt-4-1106-preview',
+                temperature=0.7,
+                api_key=api_key
+            )
+        
         self.engine = create_engine(f"sqlite:///{self.db_path}")
         
         self.embeddings = OpenAIEmbeddings(api_key=api_key)
@@ -112,133 +136,192 @@ class PythonWorkflow:
         
         self.compiled_graph = self.graph.compile()
 
+    def process_question(self, question: str) -> Dict:
+        """Process a question through the workflow."""
+        print(f"\n{Fore.CYAN}=== Starting Python Workflow ==={Style.RESET_ALL}")
+        print(f"{Fore.CYAN}User Question:{Style.RESET_ALL} {question}")
+        
+        initial_state = {
+            "user_question": question,
+            "messages": [],
+            "data": None,
+            "code": "",
+            "results": None
+        }
+        return self.compiled_graph.invoke(initial_state)
+
     def identify_data_needs(self, state: State) -> Dict:
-        query = state['messages'][-1].content if hasattr(state['messages'][-1], 'content') else state['messages'][-1][1]
+        print(f"\n{Fore.YELLOW}=== IDENTIFY DATA NEEDS ==={Style.RESET_ALL}")
+        
+        schema = self.get_schema()
+        prompt = f"""You are a SQL expert. Write a SQL query to fetch the raw data needed for Python analysis.
+        Return ONLY the SQL query wrapped in ```sql``` blocks.
+        
+        Database Schema:
+        {schema}
+        
+        Important:
+        - DO NOT perform calculations in SQL
+        - Just fetch the necessary columns needed for Python analysis
+        - For volatility calculations, fetch at least 30 days of data
+        - For correlation calculations, fetch at least 60 days of data to account for rolling windows
+        - For date-based queries, use 'ORDER BY date DESC LIMIT X'
+        - Include the date column in results
+        - Always join tables using proper date matching
+        """
         
         messages = [
-            SystemMessage(content=f"""You are a data analysis expert. 
-            Identify what data we need to fetch from the database to answer this question.
-            
-            Available tables and columns:
-            {self.get_schema()}
-            
-            For time series analysis:
-            - Always include the date column
-            - For recent data, use ORDER BY date DESC with LIMIT
-            - For volatility, we need closing prices
-            - For price movements, we need closing prices
-            
-            Return ONLY the SQL query wrapped in ```sql``` code blocks."""),
-            HumanMessage(content=query)
+            SystemMessage(content=prompt),
+            HumanMessage(content=state['user_question'])
         ]
         
         response = self.chat_gpt.invoke(messages)
         sql = self.extract_sql(response.content)
         
-        return {
-            "messages": [("assistant", f"Data needs identified: {sql}")],
-            "code": sql
+        new_state = {
+            "user_question": state['user_question'],
+            "messages": state['messages'],
+            "code": sql,
+            "data": None,
+            "results": None
         }
+        
+        print(f"\n{Fore.YELLOW}SQL Generated:{Style.RESET_ALL}\n{sql}")
+        
+        return new_state
 
     def fetch_data(self, state: State) -> Dict:
-        sql = state['code']
+        print(f"\n{Fore.GREEN}=== FETCH DATA ==={Style.RESET_ALL}")
+        print(f"{Fore.GREEN}Current State:{Style.RESET_ALL}")
+        for key, value in state.items():
+            print(f"  {key}: {value}")
+        
         try:
+            # Use the SQL generated from identify_data_needs
+            sql = state['code']
+            print(f"\n{Fore.GREEN}Executing SQL:{Style.RESET_ALL}\n{sql}")
+            
             df = pd.read_sql(sql, self.engine)
-            return {
-                "messages": [("assistant", "Data fetched successfully")],
-                "data": df
+            
+            new_state = {
+                "user_question": state['user_question'],
+                "messages": state['messages'],
+                "data": df,
+                "code": state['code'],
+                "results": state.get('results')
             }
+            
+            print(f"\n{Fore.GREEN}Query Results:{Style.RESET_ALL}")
+            print(f"Data Shape: {df.shape}")
+            print(f"Columns: {df.columns.tolist()}")
+            print(f"Data Head:\n{df.head()}")
+            print(f"\n{Fore.GREEN}New State:{Style.RESET_ALL}")
+            for key, value in new_state.items():
+                print(f"  {key}: {value}")
+            
+            return new_state
+            
         except Exception as e:
-            return {
-                "messages": [("assistant", f"Error fetching data: {str(e)}")],
-                "data": None
+            error_msg = f"Error fetching data: {str(e)}"
+            print(f"{Fore.RED}Error:{Style.RESET_ALL} {error_msg}")
+            
+            error_state = {
+                "user_question": state['user_question'],
+                "messages": state['messages'] + [("assistant", error_msg)],
+                "data": pd.DataFrame(),
+                "code": state['code'],
+                "results": None
             }
+            
+            print(f"\n{Fore.RED}Error State:{Style.RESET_ALL}")
+            for key, value in error_state.items():
+                print(f"  {key}: {value}")
+            
+            return error_state
 
     def generate_code(self, state: State) -> Dict:
-        if state['data'] is None:
-            return {
-                "messages": [("assistant", "Cannot generate code: No data available")],
-                "code": "",
-                "results": None
-            }
-
-        query = state['messages'][0].content if hasattr(state['messages'][0], 'content') else state['messages'][0][1]
-        df = state['data']
-        data_info = f"DataFrame columns: {list(df.columns)}"
+        print(f"\n{Fore.BLUE}=== GENERATE CODE ==={Style.RESET_ALL}")
         
-        def get_code_from_llm(query_text: str) -> str:
-            messages = [
-                SystemMessage(content=f"""You are a Python data analysis expert specializing in financial calculations.
-                Generate Python code to analyze the data and answer the question. 
-                
-                Available Variables:
-                - 'df': DataFrame with columns {list(df.columns)}
-                - 'pd': pandas module
-                - 'np': numpy module
-                
-                For volatility calculations:
-                - Use log returns: np.log(df['close'] / df['close'].shift(1))
-                - Annualize by multiplying by sqrt(252)
-                
-                Required:
-                1. Use 'df' for calculations
-                2. Store final answer in 'result'
-                3. For volatility: return as decimal (0.15 for 15%)"""),
-                HumanMessage(content=query_text)
-            ]
+        messages = [
+            SystemMessage(content=f"""You are a Python data analysis expert specializing in financial calculations.
+            Generate Python code to analyze the data and answer the question. 
             
-            response = self.chat_gpt.invoke(messages)
-            return response.content
-
-        # Initial attempt
-        content = get_code_from_llm(query)
-        code = self.extract_code(content)
+            Available Variables:
+            - 'df': DataFrame with columns {list(state['data'].columns)}
+            - 'pd': pandas module
+            - 'np': numpy module
+            
+            Required:
+            1. Use 'df' for calculations
+            2. Store final answer in 'result'
+            3. For volatility: return as decimal (0.24 for 24%)
+            4. Sort data by date ascending before calculations
+            5. For rolling calculations, ensure enough data points to avoid NaN"""),
+            HumanMessage(content=state['user_question'])
+        ]
         
-        if not code:
-            return {
-                "messages": [("assistant", "Failed to generate valid Python code")],
-                "code": "",
-                "results": None
-            }
-
-        return {
-            "messages": [("assistant", code)],
-            "code": code
+        response = self.chat_gpt.invoke(messages)
+        code = self.extract_code(response.content)
+        
+        new_state = {
+            "user_question": state['user_question'],
+            "messages": state['messages'],
+            "code": code,
+            "data": state['data'],
+            "results": state.get('results')
         }
+        
+        print(f"{Fore.BLUE}Output State:{Style.RESET_ALL}")
+        print(f"Generated Code:\n{code}")
+        
+        return new_state
 
     def execute_code(self, state: State) -> Dict:
+        print(f"\n{Fore.MAGENTA}=== EXECUTE CODE ==={Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}Input State:{Style.RESET_ALL}")
+        print(f"User Question: {state['user_question']}")
+        print(f"Code to Execute:\n{state['code']}")
+        
         try:
             namespace = {
                 'pd': pd,
                 'np': np,
                 'df': state['data'],
-                'engine': self.engine  # Add engine to namespace for SQL queries
+                'engine': self.engine
             }
             
             exec(state['code'], namespace)
-            
             result = namespace.get('result', "No result variable found")
             
-            # Format the result for display
             if isinstance(result, (float, np.float64)):
                 formatted_result = f"{result:.4f}"
             elif isinstance(result, pd.DataFrame):
                 formatted_result = "\n" + result.to_string()
             else:
                 formatted_result = str(result)
-            
-            print(f"\n{Fore.GREEN}Result:{Style.RESET_ALL}")
-            print(formatted_result)
-            
-            return {
-                "messages": [("assistant", f"Result: {formatted_result}")],
+
+            new_state = {
+                "user_question": state['user_question'],
+                "messages": state['messages'] + [("assistant", f"Result: {formatted_result}")],
+                "code": state['code'],
+                "data": state['data'],
                 "results": result
             }
+            
+            print(f"{Fore.MAGENTA}Output State:{Style.RESET_ALL}")
+            print(f"Execution Result: {formatted_result}")
+            
+            return new_state
+            
         except Exception as e:
             error_msg = f"Error executing code: {str(e)}"
-            print(f"\n{Fore.RED}{error_msg}{Style.RESET_ALL}")
+            print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
+            
             return {
-                "messages": [("assistant", error_msg)],
+                "user_question": state['user_question'],
+                "messages": state['messages'] + [("assistant", error_msg)],
+                "code": state['code'],
+                "data": state['data'],
                 "results": None
             }
 
@@ -251,16 +334,6 @@ class PythonWorkflow:
         code_pattern = r'```python\n(.*?)\n```'
         matches = re.findall(code_pattern, text, re.DOTALL)
         return matches[0].strip() if matches else text.strip()
-
-    def process_question(self, question: str) -> Dict:
-        """Process a question through the workflow."""
-        initial_state = {
-            "messages": [HumanMessage(content=question)],
-            "data": None,
-            "code": "",
-            "results": None
-        }
-        return self.compiled_graph.invoke(initial_state)
 
     def get_schema(self) -> str:
         """Get the current database schema."""
