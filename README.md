@@ -36,10 +36,26 @@ _after this step you should see a `synthetic_data.db` in `/src`_
 3- navigate to `src` and run `main.py`
 ```bash
 cd ../src
+# Use OpenAI (default)
 python main.py
+
+# Or use Google's Gemini model
+python main.py -gemini
 ```
 
 _Optional_ run `visualize_workflows.py` to show workflow graphs
+
+## API Keys
+
+Create a `keys.env` file in the `src/agents` directory with your API keys:
+```
+OPENAI_API_KEY=your_openai_key_here
+GOOGLE_API_KEY=your_gemini_key_here  # Optional, only if using Gemini
+```
+
+## Development
+
+See [TODO.md](TODO.md) for planned features and improvements.
 
 ## Implementaions
 
