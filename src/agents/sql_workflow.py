@@ -27,7 +27,6 @@ if not api_key and env_path.exists():
     google_api_key = os.getenv('GOOGLE_API_KEY')
     os.environ["GOOGLE_API_KEY"] = google_api_key
 
-
 print("API Key loaded:", bool(api_key))
 
 class SQLExtractor(BaseModel):
@@ -51,10 +50,11 @@ class SQLExtractor(BaseModel):
         return v.strip()
 
 class State(TypedDict):
-    messages: Annotated[list, add_messages]
+    user_question: str  # Original user question
+    messages: Annotated[list, "Message history"]
     current_sql: str
     results: Any
-    
+
 class SQLWorkflow:
     def __init__(self, db_path: str = "../synthetic_data.db", use_gemini: bool = False):
         self.db_path = db_path
@@ -93,13 +93,6 @@ class SQLWorkflow:
 
     def setup_graph(self):
         self.graph = StateGraph(State)
-        self.chat_gpt = ChatGoogleGenerativeAI(
-            model="gemini-1.5-pro",
-            temperature=0,
-            max_tokens=None,
-            timeout=None,
-            max_retries=2
-        )
         
         self.graph.add_node("parse_question", self.parse_question)
         self.graph.add_node("generate_sql", self.generate_sql)
@@ -114,10 +107,26 @@ class SQLWorkflow:
         
         self.compiled_graph = self.graph.compile()
 
+    def process_question(self, question: str) -> Dict:
+        print(f"\n{Fore.CYAN}=== Starting SQL Workflow ==={Style.RESET_ALL}")
+        print(f"{Fore.CYAN}User Question:{Style.RESET_ALL} {question}")
+        
+        initial_state = {
+            "user_question": question,
+            "messages": [],
+            "current_sql": "",
+            "results": None
+        }
+        return self.compiled_graph.invoke(initial_state)
+
     def parse_question(self, state: State) -> Dict:
-        query = state['messages'][-1].content
-        print(f"{Fore.CYAN}Parsing Question:{Style.RESET_ALL} {query}")
-        return {"messages": [("assistant", f"Parsed question: {query}")]}
+        print(f"{Fore.CYAN}Parsing Question:{Style.RESET_ALL} {state['user_question']}")
+        return {
+            "user_question": state['user_question'],
+            "messages": [("assistant", f"Parsed question: {state['user_question']}")],
+            "current_sql": state['current_sql'],
+            "results": state['results']
+        }
 
     def get_schema(self) -> str:
         conn = sqlite3.connect(self.db_path)
@@ -139,7 +148,6 @@ class SQLWorkflow:
         return "\n\n".join(main_schema)
 
     def generate_sql(self, state: State) -> Dict:
-        query = state['messages'][-1].content if hasattr(state['messages'][-1], 'content') else state['messages'][-1][1]
         schema = self.get_schema()
         
         print(f"\n{Fore.BLUE}Database Schema:{Style.RESET_ALL}")
@@ -153,10 +161,10 @@ class SQLWorkflow:
             
             Return ONLY the SQL query wrapped in ```sql``` code blocks. Do not include any explanations.
             Important: For recent data, use ORDER BY date DESC with LIMIT instead of date comparisons."""),
-            HumanMessage(content=query)
+            HumanMessage(content=state['user_question'])
         ]
         
-        print(f"{Fore.BLUE}Question being sent to LLM:{Style.RESET_ALL} {query}\n")
+        print(f"{Fore.BLUE}Question being sent to LLM:{Style.RESET_ALL} {state['user_question']}\n")
         
         response = self.chat_gpt.invoke(messages)
         
@@ -165,36 +173,43 @@ class SQLWorkflow:
         
         print(f"{Fore.GREEN}Generated SQL:{Style.RESET_ALL} {sql}")
         return {
-            "messages": [("assistant", sql)],
-            "current_sql": sql
+            "user_question": state['user_question'],
+            "messages": state['messages'] + [("assistant", sql)],
+            "current_sql": sql,
+            "results": state['results']
         }
 
     def validate_sql(self, state: State) -> Dict:
-        sql = state['current_sql']
         print(f"{Fore.YELLOW}Validating SQL...{Style.RESET_ALL}")
         
-        return {"messages": [("assistant", "SQL validated")], "current_sql": sql}
+        # Here you could add actual SQL validation logic
+        return {
+            "user_question": state['user_question'],
+            "messages": state['messages'] + [("assistant", "SQL validated")],
+            "current_sql": state['current_sql'],
+            "results": state['results']
+        }
 
     def execute_sql(self, state: State) -> Dict:
-        sql = state['current_sql']
         try:
             with self.engine.connect() as conn:
-                result = conn.execute(text(sql))
+                result = conn.execute(text(state['current_sql']))
                 rows = result.fetchall()
                 print(f"{Fore.MAGENTA}Query Results:{Style.RESET_ALL}")
                 for row in rows:
                     print(row)
-                return {"messages": [("assistant", "Query executed successfully")], "results": rows}
+                return {
+                    "user_question": state['user_question'],
+                    "messages": state['messages'] + [("assistant", "Query executed successfully")],
+                    "current_sql": state['current_sql'],
+                    "results": rows
+                }
         except Exception as e:
-            print(f"{Fore.RED}Error executing SQL:{Style.RESET_ALL} {str(e)}")
-            return {"messages": [("assistant", f"Error: {str(e)}")], "results": None}
-
-    def process_question(self, question: str) -> Dict:
-        print(f"\n{Fore.CYAN}Processing Question:{Style.RESET_ALL} {question}")
-        initial_state = {
-            "messages": [HumanMessage(content=question)],
-            "current_sql": "",
-            "results": None
-        }
-        result = self.compiled_graph.invoke(initial_state)
-        return result
+            error_msg = f"Error executing SQL: {str(e)}"
+            print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
+            return {
+                "user_question": state['user_question'],
+                "messages": state['messages'] + [("assistant", f"Error: {str(e)}")],
+                "current_sql": state['current_sql'],
+                "results": None
+            }
