@@ -56,11 +56,32 @@ class State(TypedDict):
     results: Any
     
 class SQLWorkflow:
-    def __init__(self, db_path: str = "../synthetic_data.db", use_gemini: bool = False):
+    def __init__(self, db_path: str = "../synthetic_data.db", use_gemini: bool = False, verbose: bool = True):
         self.db_path = db_path
+        self.verbose = verbose
         self.use_gemini = use_gemini
         self.setup_components()
         self.setup_graph()
+
+    def format_print(self, category: str, content: str, is_result: bool = False):
+        if not self.verbose:
+            return
+            
+        if is_result:
+            print(f"\n{Fore.GREEN}{category}:{Style.RESET_ALL} {content}")
+        else:
+            print(f"\n\033[3m{Fore.CYAN}{category}:{Style.RESET_ALL}\033[3m {content}\033[0m")
+
+    def print_state(self, state: Dict, title: str = "Current State"):
+        if not self.verbose:
+            return
+            
+        print(f"\n\033[3m{Fore.MAGENTA}{title}:{Style.RESET_ALL}")
+        for key, value in state.items():
+            if key in ['results', 'current_sql']:
+                print(f"{key}: {value}")  # Normal text for results and SQL
+            else:
+                print(f"\033[3m{key}: {value}\033[0m")  # Italic for other state items
 
     def setup_components(self):
         if self.use_gemini:
@@ -115,36 +136,49 @@ class SQLWorkflow:
         self.compiled_graph = self.graph.compile()
 
     def parse_question(self, state: State) -> Dict:
+        if self.verbose:
+            self.format_print("SQL Workflow - Parse Question", "Starting")
+            self.print_state(state)
+        
         query = state['messages'][-1].content
-        print(f"{Fore.CYAN}Parsing Question:{Style.RESET_ALL} {query}")
+        self.format_print("User Query", query)
+        
         return {"messages": [("assistant", f"Parsed question: {query}")]}
 
     def get_schema(self) -> str:
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT name from sqlite_master WHERE type='table';")
-        tables = cursor.fetchall()
-
-        main_schema = []
-        for table in tables:
-            table_name = table[0]
-            cursor.execute(f'PRAGMA table_info({table_name});')
-            columns = cursor.fetchall()
-            info = [f"    - {col[1]} ({col[2]})" for col in columns]
-            schema = f"Table: {table_name}\n" + "\n".join(info)
-            main_schema.append(schema)
-        
-        conn.close()
-        return "\n\n".join(main_schema)
+        """Get the current database schema."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tables = cursor.fetchall()
+            
+            if not tables:
+                self.format_print("Warning", "No tables found in database")
+                return "No tables found in database"
+            
+            schema_parts = []
+            for table in tables:
+                table_name = table[0]
+                cursor.execute(f"PRAGMA table_info({table_name});")
+                columns = cursor.fetchall()
+                columns_info = [f"    - {col[1]} ({col[2]})" for col in columns]
+                schema_parts.append(f"Table: {table_name}\n" + "\n".join(columns_info))
+            
+            conn.close()
+            return "\n\n".join(schema_parts)
+        except Exception as e:
+            self.format_print("Error", f"Error getting schema: {str(e)}")
+            return str(e)
 
     def generate_sql(self, state: State) -> Dict:
+        if self.verbose:
+            self.format_print("SQL Workflow - Generate SQL", "Starting")
+            self.print_state(state)
+        
         query = state['messages'][-1].content if hasattr(state['messages'][-1], 'content') else state['messages'][-1][1]
         schema = self.get_schema()
-        
-        print(f"\n{Fore.BLUE}Database Schema:{Style.RESET_ALL}")
-        print(schema)
-        print()
         
         messages = [
             SystemMessage(content=f"""You are a SQL expert. Generate a SQL query to answer the question.
@@ -156,47 +190,61 @@ class SQLWorkflow:
             HumanMessage(content=query)
         ]
         
-        print(f"{Fore.BLUE}Question being sent to LLM:{Style.RESET_ALL} {query}\n")
-        
         response = self.chat_gpt.invoke(messages)
-        
         extractor = SQLExtractor(response=response.content)
         sql = extractor.response
         
-        print(f"{Fore.GREEN}Generated SQL:{Style.RESET_ALL} {sql}")
+        if self.verbose:
+            self.format_print("Generated SQL Query", sql, is_result=True)
+        
         return {
             "messages": [("assistant", sql)],
             "current_sql": sql
         }
 
     def validate_sql(self, state: State) -> Dict:
+        if self.verbose:
+            self.format_print("SQL Workflow - Validate SQL", "Starting")
+        
         sql = state['current_sql']
-        print(f"{Fore.YELLOW}Validating SQL...{Style.RESET_ALL}")
+        self.format_print("Validating SQL", sql)
         
         return {"messages": [("assistant", "SQL validated")], "current_sql": sql}
 
     def execute_sql(self, state: State) -> Dict:
+        if self.verbose:
+            self.format_print("SQL Workflow - Execute SQL", "Starting")
+        
         sql = state['current_sql']
         try:
             with self.engine.connect() as conn:
                 result = conn.execute(text(sql))
                 rows = result.fetchall()
-                print(f"{Fore.MAGENTA}Query Results:{Style.RESET_ALL}")
-                for row in rows:
-                    print(row)
+                
+                if self.verbose:
+                    self.format_print("Query Results", "\n".join(str(row) for row in rows), is_result=True)
+                
                 return {"messages": [("assistant", "Query executed successfully")], "results": rows}
         except Exception as e:
-            print(f"{Fore.RED}Error executing SQL:{Style.RESET_ALL} {str(e)}")
-            return {"messages": [("assistant", f"Error: {str(e)}")], "results": None}
+            error_msg = f"Error executing SQL: {str(e)}"
+            self.format_print("Error", error_msg)
+            return {"messages": [("assistant", error_msg)], "results": None}
 
     def process_question(self, question: str) -> Dict:
-        print(f"\n{Fore.CYAN}Processing Question:{Style.RESET_ALL} {question}")
+        if self.verbose:
+            self.format_print("Processing New SQL Question", question)
+            
         initial_state = {
             "messages": [HumanMessage(content=question)],
             "current_sql": "",
             "results": None
         }
+        
         result = self.compiled_graph.invoke(initial_state)
+        
+        if self.verbose:
+            self.format_print("SQL Process Complete", "", is_result=True)
+        
         return result
 
     def identify_data_needs(self, state: State) -> Dict:

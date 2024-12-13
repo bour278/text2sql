@@ -40,11 +40,32 @@ class State(TypedDict):
     results: Any
 
 class PythonWorkflow:
-    def __init__(self, db_path: str = "../synthetic_data.db", use_gemini: bool = False):
+    def __init__(self, db_path: str = "../synthetic_data.db", use_gemini: bool = False, verbose: bool = True):
         self.db_path = db_path
         self.use_gemini = use_gemini
+        self.verbose = verbose
         self.setup_components()
         self.setup_graph()
+
+    def format_print(self, category: str, content: str, is_result: bool = False):
+        if not self.verbose:
+            return
+            
+        if is_result:
+            print(f"\n{Fore.GREEN}{category}:{Style.RESET_ALL} {content}")
+        else:
+            print(f"\n\033[3m{Fore.CYAN}{category}:{Style.RESET_ALL}\033[3m {content}\033[0m")
+
+    def print_state(self, state: Dict, title: str = "Current State"):
+        if not self.verbose:
+            return
+            
+        print(f"\n\033[3m{Fore.MAGENTA}{title}:{Style.RESET_ALL}")
+        for key, value in state.items():
+            if key in ['results', 'code', 'data']:
+                print(f"{key}: {value}")  # Normal text for results, code, and data
+            else:
+                print(f"\033[3m{key}: {value}\033[0m")  # Italic for other state items
 
     def setup_components(self):
         api_key = os.getenv("OPENAI_API_KEY")
@@ -78,8 +99,9 @@ class PythonWorkflow:
         self.setup_rag()
 
     def setup_rag(self):
-        pandas_path = Path("src/rag-data/pandas-cookbook.md")
-        sqlite_path = Path("src/rag-data/sqlite-cookbook.md")
+        current_dir = Path(__file__).parent.parent
+        pandas_path = current_dir / "rag-data" / "pandas-cookbook.md"
+        sqlite_path = current_dir / "rag-data" / "sqlite-cookbook.md"
         
         if not pandas_path.exists():
             print(f"Warning: {pandas_path} not found")
@@ -122,7 +144,8 @@ class PythonWorkflow:
 
     def setup_graph(self):
         self.graph = StateGraph(State)
-        
+
+        print(f"\n{Fore.BLUE}Starting Python Workflow{Style.RESET_ALL}")
         self.graph.add_node("identify_data_needs", self.identify_data_needs)
         self.graph.add_node("fetch_data", self.fetch_data)
         self.graph.add_node("generate_code", self.generate_code)
@@ -138,8 +161,9 @@ class PythonWorkflow:
 
     def process_question(self, question: str) -> Dict:
         """Process a question through the workflow."""
-        print(f"\n{Fore.CYAN}=== Starting Python Workflow ==={Style.RESET_ALL}")
-        print(f"{Fore.CYAN}User Question:{Style.RESET_ALL} {question}")
+        
+        if self.verbose:
+            print(f"{Fore.CYAN}     User Question:{Style.RESET_ALL} {question}")
         
         initial_state = {
             "user_question": question,
@@ -151,8 +175,10 @@ class PythonWorkflow:
         return self.compiled_graph.invoke(initial_state)
 
     def identify_data_needs(self, state: State) -> Dict:
-        print(f"\n{Fore.YELLOW}=== IDENTIFY DATA NEEDS ==={Style.RESET_ALL}")
-        
+        if self.verbose:
+            self.format_print("Python Workflow - Identify Data Needs", "Starting")
+            self.print_state(state)
+
         schema = self.get_schema()
         prompt = f"""You are a SQL expert. Write a SQL query to fetch the raw data needed for Python analysis.
         Return ONLY the SQL query wrapped in ```sql``` blocks.
@@ -163,12 +189,14 @@ class PythonWorkflow:
         Important:
         - DO NOT perform calculations in SQL
         - Just fetch the necessary columns needed for Python analysis
-        - For volatility calculations, fetch at least 30 days of data
-        - For correlation calculations, fetch at least 60 days of data to account for rolling windows
+        - For N-day rolling calculations, fetch at least N+2 days of data
+        - For volatility calculations:
+          * Need N+2 days minimum (N days + 1 for pct_change + 1 for initial value)
+          * For 21-day volatility, fetch at least 23 days
+        - For correlation calculations, fetch at least 62 days
         - For date-based queries, use 'ORDER BY date DESC LIMIT X'
         - Include the date column in results
-        - Always join tables using proper date matching
-        """
+        - Always join tables using proper date matching"""
         
         messages = [
             SystemMessage(content=prompt),
@@ -178,32 +206,31 @@ class PythonWorkflow:
         response = self.chat_gpt.invoke(messages)
         sql = self.extract_sql(response.content)
         
-        new_state = {
+        if self.verbose:
+            self.format_print("Generated SQL for Data Fetch", sql, is_result=True)
+        
+        return {
             "user_question": state['user_question'],
             "messages": state['messages'],
             "code": sql,
             "data": None,
             "results": None
         }
-        
-        print(f"\n{Fore.YELLOW}SQL Generated:{Style.RESET_ALL}\n{sql}")
-        
-        return new_state
 
     def fetch_data(self, state: State) -> Dict:
-        print(f"\n{Fore.GREEN}=== FETCH DATA ==={Style.RESET_ALL}")
-        print(f"{Fore.GREEN}Current State:{Style.RESET_ALL}")
-        for key, value in state.items():
-            print(f"  {key}: {value}")
-        
-        try:
-            # Use the SQL generated from identify_data_needs
-            sql = state['code']
-            print(f"\n{Fore.GREEN}Executing SQL:{Style.RESET_ALL}\n{sql}")
+        if self.verbose:
+            self.format_print("Python Workflow - Fetch Data", "Starting")
+            self.print_state(state)
             
+        try:
+            sql = state['code']
             df = pd.read_sql(sql, self.engine)
             
-            new_state = {
+            if self.verbose:
+                self.format_print("Data Retrieved", f"\nShape: {df.shape}\nColumns: {df.columns.tolist()}", is_result=True)
+                self.format_print("Sample Data", f"\n{df.head()}", is_result=True)
+            
+            return {
                 "user_question": state['user_question'],
                 "messages": state['messages'],
                 "data": df,
@@ -211,37 +238,22 @@ class PythonWorkflow:
                 "results": state.get('results')
             }
             
-            print(f"\n{Fore.GREEN}Query Results:{Style.RESET_ALL}")
-            print(f"Data Shape: {df.shape}")
-            print(f"Columns: {df.columns.tolist()}")
-            print(f"Data Head:\n{df.head()}")
-            print(f"\n{Fore.GREEN}New State:{Style.RESET_ALL}")
-            for key, value in new_state.items():
-                print(f"  {key}: {value}")
-            
-            return new_state
-            
         except Exception as e:
             error_msg = f"Error fetching data: {str(e)}"
-            print(f"{Fore.RED}Error:{Style.RESET_ALL} {error_msg}")
-            
-            error_state = {
+            self.format_print("Error", error_msg)
+            return {
                 "user_question": state['user_question'],
                 "messages": state['messages'] + [("assistant", error_msg)],
                 "data": pd.DataFrame(),
                 "code": state['code'],
                 "results": None
             }
-            
-            print(f"\n{Fore.RED}Error State:{Style.RESET_ALL}")
-            for key, value in error_state.items():
-                print(f"  {key}: {value}")
-            
-            return error_state
 
     def generate_code(self, state: State) -> Dict:
-        print(f"\n{Fore.BLUE}=== GENERATE CODE ==={Style.RESET_ALL}")
-        
+        if self.verbose:
+            self.format_print("Python Workflow - Generate Code", "Starting")
+            self.print_state(state)
+
         messages = [
             SystemMessage(content=f"""You are a Python data analysis expert specializing in financial calculations.
             Generate Python code to analyze the data and answer the question. 
@@ -263,25 +275,22 @@ class PythonWorkflow:
         response = self.chat_gpt.invoke(messages)
         code = self.extract_code(response.content)
         
-        new_state = {
+        if self.verbose:
+            self.format_print("Generated Python Code", code, is_result=True)
+        
+        return {
             "user_question": state['user_question'],
             "messages": state['messages'],
             "code": code,
             "data": state['data'],
             "results": state.get('results')
         }
-        
-        print(f"{Fore.BLUE}Output State:{Style.RESET_ALL}")
-        print(f"Generated Code:\n{code}")
-        
-        return new_state
 
     def execute_code(self, state: State) -> Dict:
-        print(f"\n{Fore.MAGENTA}=== EXECUTE CODE ==={Style.RESET_ALL}")
-        print(f"{Fore.MAGENTA}Input State:{Style.RESET_ALL}")
-        print(f"User Question: {state['user_question']}")
-        print(f"Code to Execute:\n{state['code']}")
-        
+        if self.verbose:
+            self.format_print("Python Workflow - Execute Code", "Starting")
+            self.print_state(state)
+            
         try:
             namespace = {
                 'pd': pd,
@@ -300,7 +309,10 @@ class PythonWorkflow:
             else:
                 formatted_result = str(result)
 
-            new_state = {
+            if self.verbose:
+                self.format_print("Analysis Results", formatted_result, is_result=True)
+            
+            return {
                 "user_question": state['user_question'],
                 "messages": state['messages'] + [("assistant", f"Result: {formatted_result}")],
                 "code": state['code'],
@@ -308,15 +320,9 @@ class PythonWorkflow:
                 "results": result
             }
             
-            print(f"{Fore.MAGENTA}Output State:{Style.RESET_ALL}")
-            print(f"Execution Result: {formatted_result}")
-            
-            return new_state
-            
         except Exception as e:
             error_msg = f"Error executing code: {str(e)}"
-            print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
-            
+            self.format_print("Error", error_msg)
             return {
                 "user_question": state['user_question'],
                 "messages": state['messages'] + [("assistant", error_msg)],

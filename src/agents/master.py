@@ -10,6 +10,9 @@ import os
 from pathlib import Path
 import json
 from typing import Any, Dict
+from colorama import init, Fore, Style
+
+init()
 
 current_dir = Path(__file__).parent
 env_path = current_dir / "keys.env"
@@ -33,11 +36,32 @@ class State(TypedDict):
     results: Any
 
 class MasterWorkflow:
-    def __init__(self, db_path: str = "../synthetic_data.db", use_gemini: bool = False):
+    def __init__(self, db_path: str = "../synthetic_data.db", use_gemini: bool = False, verbose: bool = True):
         self.db_path = db_path
         self.use_gemini = use_gemini
+        self.verbose = verbose 
         self.setup_components()
         self.setup_graph()
+
+    def format_print(self, category: str, content: str, is_result: bool = False):
+        if not self.verbose:
+            return
+            
+        if is_result:
+            print(f"\n{Fore.GREEN}{category}:{Style.RESET_ALL} {content}")
+        else:
+            print(f"\n\033[3m{Fore.CYAN}{category}:{Style.RESET_ALL}\033[3m {content}\033[0m")
+
+    def print_state(self, state: Dict, title: str = "Current State"):
+        if not self.verbose:
+            return
+            
+        print(f"\n\033[3m{Fore.MAGENTA}{title}:{Style.RESET_ALL}")
+        for key, value in state.items():
+            if key in ['results', 'code', 'data']:
+                print(f"{key}: {value}")  # Normal text for results and code
+            else:
+                print(f"\033[3m{key}: {value}\033[0m")  # Italic for other state items
 
     def setup_components(self):
         api_key = os.getenv("OPENAI_API_KEY")
@@ -69,11 +93,14 @@ class MasterWorkflow:
                 api_key=api_key
             )
         
-        self.sql_workflow = SQLWorkflow(self.db_path, self.use_gemini)
-        self.python_workflow = PythonWorkflow(self.db_path, self.use_gemini)
+        self.sql_workflow = SQLWorkflow(self.db_path, self.use_gemini, self.verbose)
+        self.python_workflow = PythonWorkflow(self.db_path, self.use_gemini, self.verbose)
 
     def setup_graph(self):
         self.graph = StateGraph(State)
+        
+        if self.verbose:
+            print(f"\n{Fore.BLUE}=== Activating SQL Agent ==={Style.RESET_ALL}")
         
         self.graph.add_node("evaluate_complexity", self.evaluate_complexity)
         self.graph.add_node("route_workflow", self.route_workflow)
@@ -87,7 +114,10 @@ class MasterWorkflow:
     def evaluate_complexity(self, state: State) -> Dict:
         """Evaluate query complexity using LLM."""
         query = state['messages'][-1].content
-        print(f"INitil query: {query}")
+        
+        if self.verbose:
+            self.format_print("Evaluating Query Complexity", query)
+            self.print_state(state)
         
         messages = [
             SystemMessage(content="""You are a SQL complexity evaluator. 
@@ -108,8 +138,10 @@ class MasterWorkflow:
         
         try:
             response = self.chat_gpt.invoke(messages)
-            print("Raw LLM Response:", response.content)  # Debug print
             
+            if self.verbose:
+                self.format_print("LLM Evaluation", response.content)
+                
             content = response.content.strip()
             if content.startswith('```json'):
                 content = content[7:-3]
@@ -120,30 +152,34 @@ class MasterWorkflow:
             if not all(field in evaluation for field in required_fields):
                 raise ValueError("Missing required fields in evaluation")
             
-            return {
+            result = {
                 "complexity_score": float(evaluation["complexity_score"]),
                 "workflow_type": evaluation["recommended_workflow"],
-                "messages": [("assistant", f"content: {query}", f"Complexity evaluation: {evaluation['reasoning']}")],
+                "messages": [("assistant", f"Query: {query}", f"Evaluation: {evaluation['reasoning']}")],
             }
+
+            if self.verbose:
+                self.format_print("Complexity Analysis Result", 
+                                f"Score: {result['complexity_score']}, Workflow: {result['workflow_type']}", 
+                                is_result=True)
             
-        except json.JSONDecodeError as e:
-            print(f"JSON Decode Error: {e}")
+            return result
+            
+        except (json.JSONDecodeError, Exception) as e:
+            error_msg = f"Evaluation Error: {str(e)}"
+            self.format_print("Error", error_msg)
             return {
                 "complexity_score": 0.1,
                 "workflow_type": "sql",
                 "messages": [("assistant", "Failed to parse complexity, defaulting to SQL workflow")],
             }
-        except Exception as e:
-            print(f"Evaluation Error: {e}")
-            return {
-                "complexity_score": 0.1,
-                "workflow_type": "sql",
-                "messages": [("assistant", f"Error in evaluation: {str(e)}")],
-            }
 
     def route_workflow(self, state: State) -> Dict:
         """Route to appropriate workflow based on complexity."""
-        print(f'weird state!!! {state}')
+        if self.verbose:
+            self.format_print("Routing Workflow", f"Selected: {state['workflow_type']}")
+            self.print_state(state)
+
         first_message = state['messages'][0]
         original_question = first_message.content if hasattr(first_message, 'content') else first_message[1]
         
@@ -152,19 +188,29 @@ class MasterWorkflow:
         else:
             result = self.python_workflow.process_question(original_question)
         
+        if self.verbose:
+            self.format_print("Final Results", str(result.get("results", "No results")), is_result=True)
+        
         return {
             "messages": result["messages"],
             "results": result["results"]
         }
 
     def process_question(self, question: str) -> Dict:
+        if self.verbose:
+            self.format_print("Processing New Question", question)
+            
         initial_state = {
             "messages": [HumanMessage(content=question)],
             "complexity_score": 0.0,
             "workflow_type": "",
             "results": None
         }
+        
         result = self.compiled_graph.invoke(initial_state)
+        
+        if self.verbose:
+            self.format_print("Process Complete", "", is_result=True)
         
         return {
             "workflow_type": result["workflow_type"],
