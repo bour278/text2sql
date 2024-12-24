@@ -1,6 +1,4 @@
-import os
 import time
-import json
 import re
 import numpy as np
 import pandas as pd
@@ -8,26 +6,6 @@ from sqlalchemy import create_engine
 from langchain_openai import ChatOpenAI
 from langchain_community.utilities import SQLDatabase
 from dotenv import load_dotenv
-
-class Config:
-    """SQL agent config"""
-    def __init__(
-        self,
-        env_fpath,
-        sql_db_fpath,
-        openai_model = 'gpt-4-1106-preview',
-        temperature  = 0.7
-        ):
-        load_dotenv(env_fpath)
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        
-        self.llm = ChatOpenAI(
-            model=openai_model,
-            temperature=temperature,
-            api_key=openai_api_key
-            )
-        self.db = SQLDatabase.from_uri(f"sqlite:///{sql_db_fpath}")
-        self.engine = create_engine(f"sqlite:///{sql_db_fpath}")
 
 def get_schema_context(config):
     db = config.db
@@ -88,6 +66,7 @@ def execute_sql1(user_query, config):
     sql_query = extract_query(config.llm.invoke(sql_prompt).content)
     print(f'SQL Query: {sql_query}')
     df = pd.read_sql(sql_query, config.engine)
+    print(f'Query Results:\n{df.to_string()}')
     return df
 
 def execute_python1(user_query, df, config):
