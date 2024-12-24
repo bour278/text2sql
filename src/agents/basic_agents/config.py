@@ -27,7 +27,7 @@ class Config:
 def get_paths():
     """Get the paths for environment and database files."""
     SRC_PATH = os.path.dirname(os.getcwd())
-    ENV_FPATH = f'{SRC_PATH}/keys.env'
-    SQL_DB_FPATH = f'{SRC_PATH}/synthetic_data.db'
+    ENV_FPATH = os.path.join(SRC_PATH, 'agents', 'keys.env')
+    SQL_DB_FPATH = os.path.join(SRC_PATH, 'src', 'synthetic_data.db')
     
     return ENV_FPATH, SQL_DB_FPATH

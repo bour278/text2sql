@@ -228,7 +228,7 @@ class PythonWorkflow:
             
             if self.verbose:
                 self.format_print("Data Retrieved", f"\nShape: {df.shape}\nColumns: {df.columns.tolist()}", is_result=True)
-                self.format_print("Sample Data", f"\n{df.head()}", is_result=True)
+                self.format_print("Sample Data", f"\n{df.to_string()}", is_result=True)
             
             return {
                 "user_question": state['user_question'],

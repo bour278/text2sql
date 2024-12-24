@@ -154,7 +154,9 @@ SELECT
 FROM {from_clause}'''.strip()
     print(f'=' * 30)
     print(f'SQL Query: {query}')
-    return pd.read_sql(query, config.engine)
+    df = pd.read_sql(query, config.engine)
+    print(f'Query Results:\n{df.to_string()}')
+    return df
 
 def get_python_prompt3(user_query, df, config):
     prompt = f''' 

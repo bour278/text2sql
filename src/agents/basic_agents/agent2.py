@@ -1,4 +1,5 @@
 import os
+
 import time
 import json
 import re
@@ -117,6 +118,7 @@ def execute_sql2(sql_prompt, config):
     sql_query = extract_query(config.llm.invoke(sql_prompt).content)
     print(f'SQL Query: {sql_query}')
     df = pd.read_sql(sql_query, config.engine)
+    print(f'Query Results:\n{df.to_string()}')
     return df 
 
 def get_python_prompt2(user_query, df, config):
