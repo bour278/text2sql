@@ -1,77 +1,66 @@
-# Text2SQL
+# Text-to-SQL Interface
 
-## Description
-📔 Text ➡️ SQL 🧑‍💻
+This project provides a natural language interface to query financial data stored in a SQLite database. Users can ask questions in plain English, and the system will convert them into SQL queries and return the results.
 
-## Tools
-- [LangChain SQL Q&A Tutorial](https://python.langchain.com/docs/tutorials/sql_qa/) 🦜🔗
-- [Vanna.AI](https://vanna.ai/) 🔮
-- [LlamaIndex](https://www.llamaindex.ai/) 🦙
+## Features
 
-## Tutorials
-- [How to Use LangChain to Build a Text-to-SQL Solution](https://medium.com/@marvin_thompson/how-to-use-langchain-to-build-a-text-to-sql-solution-54a173f312a5)
-- [Text2SQL GitHub Repository](https://github.com/WeitaoLu/Text2SQL)
-- [Text2SQL Workshop GitHub Repository](https://github.com/weet-ai/text2sql-workshop)
+- Interactive UI built with Streamlit
+- Database schema exploration with hoverable table information
+- Sample data preview for each table
+- Support for both OpenAI and Google Gemini models
+- Natural language processing to convert questions to SQL
 
-## Papers
-- [A Survey on Employing Large Language Models for Text-to-SQL Tasks](https://arxiv.org/html/2407.15186v2)
-- [PET-SQL: A Prompt-enhanced Two-stage Text-to-SQL Framework with Cross-consistency](https://arxiv.org/html/2403.09732v1)
-- [SeaD: End-to-end Text-to-SQL Generation with Schema-aware Denoising](https://arxiv.org/pdf/2105.07911)
-- [Next-Generation Database Interfaces:A Survey of LLM-based Text-to-SQL](https://arxiv.org/pdf/2406.08426)
+## Database Tables
 
-## Running
+The application works with the following tables:
 
-1 - install requirements
-```bash
-pip install requirements.txt
-```
+1. **ohlc**: Stock price data with open, high, low, and close prices for each date
+2. **fxrates**: Foreign exchange rates for USD to EUR, GBP, and JPY
+3. **treasury_yields**: Treasury yields for 5-year, 7-year, and 10-year bonds
+4. **yahoo_ohlc**: Stock price data from Yahoo Finance with ticker symbols
 
-2- navigate to `/data` and run `sqlite-synthetic.py` to create a toy dataset
-```bash
-cd data
-python sqlite-synthetic.py
-```
-_after this step you should see a `synthetic_data.db` in `/src`_
+## Installation
 
-3- navigate to `src` and run `main.py`
-```bash
-cd ../src
-# Use OpenAI (default)
-python main.py
+1. Clone this repository
+2. Install the required dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+3. Set up your environment variables in a `.env` file:
+   ```
+   OPENAI_API_KEY=your_openai_api_key
+   GEMINI_API_KEY=your_gemini_api_key
+   ```
 
-# Or use Google's Gemini model
-python main.py -gemini
-```
+## Usage
 
-_Optional_ run `visualize_workflows.py` to show workflow graphs
+1. Generate the synthetic database (if not already done):
+   ```
+   python data/sqlite-synthetic.py
+   ```
 
-## API Keys
+2. Run the Streamlit UI:
+   ```
+   streamlit run src/ui.py
+   ```
 
-Create a `keys.env` file in the `src/agents` directory with your API keys:
-```
-OPENAI_API_KEY=your_openai_key_here
-GOOGLE_API_KEY=your_gemini_key_here  # Optional, only if using Gemini
-```
+3. Open your browser and navigate to the URL shown in the terminal (typically http://localhost:8501)
 
-## Development
+4. Use the sidebar to explore the database schema and sample data
 
-See [TODO.md](TODO.md) for planned features and improvements.
+5. Enter your question in the text area and click "Submit Question"
 
-## Implementaions
+## Example Questions
 
-Langgraph Workflow 🦜
+- "What are the closing prices for last 30 dates in the ohlc table?"
+- "What is the average open price over the last 10 days in the ohlc table?"
+- "What is the stock volatility over the last 21 days from the ohlc table?"
+- "Calculate the correlation between 7 year treasury yields and close stock prices over the last 30 days"
+- "Find the days where the stock price movement was more than 2 standard deviations from the mean"
 
-- Master Workflow
-<p align="center">
-  <img src="/src/workflow_visualizations/master_workflow.png" alt="Master Workflow"/>
-</p>
+## Project Structure
 
-- Python Workflow
-<p align="center">
-  <img src="/src/workflow_visualizations/python_workflow.png" alt="Python Workflow"/>
-</p>
-
-- SQL Workflow
-<p align="center">
-  <img src="/src/workflow_visualizations/sql_workflow.png" alt="SQL Workflow"/>
-</p>
+- `src/ui.py`: Streamlit UI interface
+- `src/main.py`: Command-line interface for running queries
+- `data/sqlite-synthetic.py`: Script to generate synthetic financial data
+- `agents/`: Contains the agents that process natural language queries
